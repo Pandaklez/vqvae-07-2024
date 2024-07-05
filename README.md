@@ -2,7 +2,7 @@
 
 -----------
 
-Random codebook restarts, reading dataset from zip, pose normalization
+**TL;DR**: Random codebook restarts, reading dataset from zip, pose normalization
 
 -----------
 
