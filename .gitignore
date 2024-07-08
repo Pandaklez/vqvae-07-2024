@@ -1,0 +1,12 @@
+./vector_quantize_pytorch/*
+./SSL_video_eaf/*
+./saved_models/*
+RQVAE_norm_opt.ipynb
+modules.py
+motion_vqvae.py
+quantise.py
+ssl_corpus_preprocess.ipynb
+Vector_Quantized_VAE_opt.ipynb
+VQVAE_norm_by_meanpose.ipynb
+VQVAE_norm_bymeanpose-lexicon.ipynb
+*.DS_Store

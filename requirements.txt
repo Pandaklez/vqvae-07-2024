@@ -1,0 +1,10 @@
+matplotlib
+tqdm
+torch==2.0.1
+torchvision==0.15.2
+lightning>=2.0.0
+torchmetrics>=0.11.4
+matplotlib
+jupyter
+pandas
+scikit-learn
