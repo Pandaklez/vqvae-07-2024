@@ -5,6 +5,8 @@ from IPython.display import clear_output
 from itertools import islice
 import os
 from torch.utils.data import Dataset, IterableDataset
+from torch.nn.utils.rnn import pad_sequence
+import psutil
 import torch
 import math
 from random import randrange, seed
@@ -268,6 +270,24 @@ def recursive_append(list1, list2):
     flatten(list2)
     return result
 
+def print_memory():
+    # Get current process
+    process = psutil.Process()
+
+    # Get the memory info of the current process
+    memory_info = process.memory_info()
+
+    # Convert bytes to GB
+    rss_in_gb = memory_info.rss / (1024 ** 3)
+    vms_in_gb = memory_info.vms / (1024 ** 3)
+
+    # Print the RSS and VMS in GB
+    print(f"Memory used in GB: RSS={rss_in_gb:.2f}, VMS={vms_in_gb:.2f}")
+
+def collate_fn(batch):
+    inputs = pad_sequence(batch, batch_first=True)
+    return inputs
+
 def load_mean_and_std():
     import json
     with open(Path(__file__).parent / "pose_normalization_lexicon.json", "r", encoding="utf-8") as f:
@@ -288,10 +308,6 @@ def load_mean_and_std():
 class PoseDataset(Dataset):
     """
     # TODO: 
-    1. (Wed) Separate func for calculating mean & std values for each joint and storing it in a json file
-    2. (Wed) A func to load this mean & std file
-    3. (Wed) A func to do pose = pose - mean / std - for each frame -> This one is instead of `shift_bodypose()` to the center, mean pose is sort of a new center
-    4. (Wed) Turn the dataset itself into huggingface dataset so it doesn't run 10 minutes on each run. Or zip just to make things faster in general
     5. (?) Add faces data
     """
     def __init__(self, df, root_dir, sequence_length=30, center_on_wrist=True, random_seed=None, normalize_by_mean_pose=False, trim=True):
@@ -533,7 +549,7 @@ class ZipPoseDataset(_ZipPoseDataset):
 
             super().__init__(zip_path=zip_path, files=files, max_length=max_length, in_memory=in_memory, dtype=dtype, df=df)
 
-        
+
 # Plotting videos in jupyter
 def draw_triple_sample_video(n, ax1, ax2, ax3, sequence_length, sample_id, x, x_hat_model1, x_hat_model2, model1_name, model2_name):
     ax1.clear()
