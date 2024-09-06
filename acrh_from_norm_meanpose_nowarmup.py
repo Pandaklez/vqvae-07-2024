@@ -22,6 +22,7 @@ class Encoder(nn.Module):
         self.proj = nn.Conv1d(in_channels=512, out_channels=16, kernel_size=3)
         
     def forward(self, x):
+        
         x = self.strided_conv_1(x)
         x = self.strided_conv_2(x)
         
@@ -36,9 +37,8 @@ class Encoder(nn.Module):
         y = y+x
         
         y = self.proj(y)
-        print("Encoder output: ", y.shape)
         return y
-    
+
 
 class VQEmbeddingEMA(nn.Module):
     """
@@ -79,7 +79,7 @@ class VQEmbeddingEMA(nn.Module):
         #  randomly restart all dead codes below threshold with random code in codebook
         dead_codes = torch.nonzero(self.usage < self.usage_threshold).squeeze(1)
         print("Are there any dead codes on this epoch? ", len(dead_codes))  # torch.any(dead_codes != 0))
-        rand_codes = torch.randperm(self.n_embeddings)[0:len(dead_codes)]
+        rand_codes = torch.randperm(self.n_embeddings)[0:len(dead_codes)].to('cpu')  # mps things
         with torch.no_grad():
             self.embedding[dead_codes] = self.embedding[rand_codes]
 
@@ -162,7 +162,7 @@ class Decoder(nn.Module):
         self.strided_t_conv_2 = nn.ConvTranspose1d(in_channels=512, out_channels=112, kernel_size=kernel_size, stride=1, padding=0, dilation=2)
         
     def forward(self, x):
-        print("x shape that is passed into Decoder:\n", x.shape)
+
         x = self.in_proj(x)
         
         y = self.residual_conv_1(x)
@@ -177,26 +177,25 @@ class Decoder(nn.Module):
         y = self.strided_t_conv_2(y)
         return y
     
-
-# Putting it together here
 class Model(nn.Module):
     def __init__(self, Encoder, Codebook, Decoder):
         super(Model, self).__init__()
         self.encoder = Encoder
         self.codebook = Codebook
         self.decoder = Decoder
-        
+                
     def forward(self, x, epoch):
         z = self.encoder(x)
         # warm up model with no quantization
-        #if epoch >= 8:
-        z_quantized, commitment_loss, codebook_loss, perplexity = self.codebook(z)
-        x_hat = self.decoder(z_quantized)
-        #else:
-        #    x_hat = self.decoder(z)
-        #    commitment_loss, codebook_loss, perplexity = torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
+        if epoch >= 10:
+            z_quantized, commitment_loss, codebook_loss, perplexity = self.codebook(z)
+            x_hat = self.decoder(z_quantized)
+        else:
+            x_hat = self.decoder(z)
+            commitment_loss, codebook_loss, perplexity = torch.tensor(0.0), torch.tensor(0.0), torch.tensor(0.0)
         
         return x_hat, commitment_loss, codebook_loss, perplexity
+
     
 
 class ModelResidualVQ(nn.Module):
