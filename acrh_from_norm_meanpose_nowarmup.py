@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from vector_quantize_pytorch import LFQ
+import math
 
 
 class Encoder(nn.Module):
@@ -198,11 +200,13 @@ class Model(nn.Module):
     
 
 class ModelResidualVQ(nn.Module):
-    def __init__(self, Encoder, Codebook, Decoder):
+    def __init__(self, Encoder, Codebook, Decoder, n_embeddings=512, latent_dim=16):
         super(ModelResidualVQ, self).__init__()
         self.encoder = Encoder
         self.codebook = Codebook
         self.decoder = Decoder
+        self.n_embeddings = n_embeddings
+        self.latent_dim = latent_dim
         
     def forward(self, x, epoch):
         z = self.encoder(x)
@@ -221,6 +225,8 @@ class ModelResidualVQ(nn.Module):
         avg_probs = torch.mean(F.one_hot(indices, self.n_embeddings).float(), dim=0)
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
         codebook_loss = torch.tensor(0.0)
+        z_quantized = z_quantized.reshape(x.shape[0], self.latent_dim, -1)  # Reshape to (batch_size, latent_dim, seq_length)
+        print("z_quantized.size() after passing through the codebook and reshaping", z_quantized.size())
         x_hat = self.decoder(z_quantized)
         return x_hat, commitment_loss, codebook_loss, perplexity
 
@@ -234,3 +240,99 @@ def calculate_beta_log(n, total_iterations=50, initial_beta=0.35, final_beta=0.0
     if beta < final_beta:
         beta = final_beta
     return beta
+
+
+class LFQAutoEncoder(nn.Module):
+    # Lookup Free Quantization AutoEncoder
+    def __init__(self, codebook_size=512, latent_dim=16, **vq_kwargs):
+        super().__init__()
+        quantize_dim = latent_dim  # Set quantize_dim to 16
+
+        # Encoder
+        self.encode = nn.Sequential(
+            nn.Conv1d(112, 64, kernel_size=3, stride=1, padding=1),  # Conv1d layer
+            nn.MaxPool1d(kernel_size=2, stride=2),                    # MaxPool1d layer
+            nn.GELU(),
+            nn.Conv1d(64, 128, kernel_size=3, stride=1, padding=1),   # Conv1d layer
+            nn.MaxPool1d(kernel_size=2, stride=2),                    # MaxPool1d layer
+            nn.GroupNorm(4, 128, affine=False),
+            nn.Conv1d(128, quantize_dim, kernel_size=1)               # Conv1d layer with kernel_size=1
+        )
+
+        # Quantization layer (use the latent_dim=16)
+        self.quantize = LFQ(dim=quantize_dim, **vq_kwargs)
+
+        # Decoder
+        self.decode = nn.Sequential(
+            nn.Conv1d(quantize_dim, 128, kernel_size=3, stride=1, padding=1),  # Output: [30, 128, 7]
+            nn.Upsample(scale_factor=2, mode="nearest"),  # Output: [30, 128, 14]
+            nn.Conv1d(128, 64, kernel_size=3, stride=1, padding=1),  # Output: [30, 64, 14]
+            nn.GELU(),
+            nn.Upsample(scale_factor=2, mode="nearest"),  # Output: [30, 64, 28]
+            nn.Conv1d(64, 112, kernel_size=3, stride=1, padding=2),  # Adjust padding to 2 for sequence length 30
+        )
+
+    def forward(self, x):
+        #print(f"Input shape: {x.shape}")  # Should be [batch_size, channels, sequence_length] [30, 112, 30]
+
+        # Encoder
+        x = self.encode(x)
+        #print(f"Encoded shape: {x.shape}")  # Shape after encoding [30, 16, 7]
+        x = x.permute(0, 2, 1)
+
+        # Quantization (output should have same shape as input to decoder)
+        x, indices, entropy_aux_loss = self.quantize(x)
+        #print(f"Quantized shape: {x.shape}")  # Shape after quantization
+        x = x.permute(0, 2, 1)
+
+        # Decoder
+        x = self.decode(x)
+        #print(f"Decoded shape: {x.shape}")  # Shape after decoding
+        return x.clamp(-1, 1), indices, entropy_aux_loss
+
+"""
+    # from vector_quantize_pytorch library examples
+    def __init__(
+        self,
+        codebook_size,
+        n_embeddings=512,
+        **vq_kwargs
+    ):
+        super().__init__()
+        assert math.log2(codebook_size).is_integer()
+        quantize_dim = int(math.log2(codebook_size))
+
+        self.encode = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.GELU(),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            # In general norm layers are commonly used in Resnet-based encoder/decoders
+            # explicitly add one here with affine=False to avoid introducing new parameters
+            nn.GroupNorm(4, 32, affine=False),
+            nn.Conv2d(32, quantize_dim, kernel_size=1),
+        )
+
+        self.quantize = LFQ(dim=quantize_dim, **vq_kwargs)
+
+        self.decode = nn.Sequential(
+            nn.Conv2d(quantize_dim, 32, kernel_size=3, stride=1, padding=1),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.Conv2d(32, 16, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.Conv2d(16, 1, kernel_size=3, stride=1, padding=1),
+        )
+        self.n_embeddings = n_embeddings
+        return
+
+    def forward(self, x):
+        x = self.encode(x)
+        x, indices, entropy_aux_loss = self.quantize(x)
+        x = self.decode(x)
+
+        avg_probs = torch.mean(F.one_hot(indices, self.n_embeddings).float(), dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+        return x.clamp(-1, 1), indices, entropy_aux_loss, perplexity
+"""
