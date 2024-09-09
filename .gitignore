@@ -18,3 +18,5 @@ saved_models/vq_vae_restart-beta-quantwarmup.pth
 ./runs/*
 ./lexicon_jsons/*
 ./wandb/*
+./.ipynb_checkpoints/*
+./__pycache__/*
