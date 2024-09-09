@@ -11,6 +11,10 @@ VQVAE_norm_by_meanpose.ipynb
 VQVAE_norm_bymeanpose-lexicon.ipynb
 *.DS_Store
 saved_models/vq_vae_restart-beta-quantwarmup.pth
-/saved_models
-/SSL_video_eaf
-/vector_quantize_pytorch
+./saved_models
+./SSL_video_eaf
+./vector_quantize_pytorch
+./MotionGPT/*
+./runs/*
+./lexicon_jsons/*
+./wandb/*
