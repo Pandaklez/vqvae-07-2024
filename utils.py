@@ -15,6 +15,7 @@ import random
 import time
 import zipfile
 import io
+import concurrent.futures
 
 
 def load_json_file(file_path):
@@ -336,16 +337,20 @@ class PoseDataset(Dataset):
                 filename = os.path.join(self.root_dir, row['movie_filename'].split('.')[0] + str('.json'))
             except Exception as e:
                 skipped += 1
-                #idx += 1
-                #print(f"At df index skipped")
+                idx += 1
+                print(f"At df index skipped")
+                if idx >= len(self.df):
+                    break
                 continue
             try:
                 json_data = load_json_file(filename)
             except Exception as e:
                 skipped += 1
-                #print(f"At json reading, Skipped {skipped} times")
+                print(f"At json reading, Skipped {skipped} times")
                 #print(e)
-                #idx += 1
+                idx += 1
+                if idx >= len(self.df):
+                    break
                 continue
 
             # print("filename: ", filename)
@@ -384,7 +389,9 @@ class PoseDataset(Dataset):
 
                     if all_data.shape[0] != 56:
                         skipped += 1
-                        #idx += 1
+                        idx += 1
+                        if idx >= len(self.df):
+                            break
                         continue
 
                     if self.normalize_by_mean_pose:
@@ -395,8 +402,10 @@ class PoseDataset(Dataset):
             if len(data) != self.sequence_length:
                 skipped += 1
                 #print("filename: ", filename)
-                #print(f"At sequence, Skipped {skipped} times")
-                #idx += 1
+                print(f"At sequence, Skipped {skipped} times")
+                idx += 1
+                if idx >= len(self.df):
+                    break
                 continue
             # print(data.shape) # (sequence_length=30,56,2)
             data = np.stack(data).astype(np.float32)  #, dtype=np.float32)
@@ -408,8 +417,10 @@ class PoseDataset(Dataset):
             if find_outlier(data_tensor):
                 skipped += 1
                 #print("filename: ", filename)
-                #print(f"At outliers, Skipped {skipped} times")
-                #idx += 1
+                print(f"At outliers, Skipped {skipped} times")
+                idx += 1
+                if idx >= len(self.df):
+                    break
                 continue
             break
         print(f"Returning sample but skipped {skipped} times")
@@ -439,6 +450,9 @@ class PackedDataset(IterableDataset):
         self.dataset = dataset
         self.max_length = max_length
         self.shuffle = shuffle
+
+    def __len__(self):
+        return len(self.dataset)
 
     def __iter__(self):
         dataset_len = len(self.dataset)
@@ -476,7 +490,8 @@ class _ZipPoseDataset(Dataset):
                  max_length: int = 512,
                  in_memory: bool = False,
                  dtype=torch.float32,
-                 df=None
+                 df=None,
+                 normalize_by_mean_pose=True
                 ):
         self.max_length = max_length
         self.zip_path = zip_path
@@ -485,39 +500,60 @@ class _ZipPoseDataset(Dataset):
         self.in_memory = in_memory
         self.dtype = dtype
         self.memory_files = []
+        self.normalize_by_mean_pose = normalize_by_mean_pose
+        self.zipf = zipfile.ZipFile(self.zip_path, 'r')
+        #self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def __len__(self):
         return len(self.files)
+
+    def _load_file(self, idx):
+        # Open zip file inside the worker thread
+        with zipfile.ZipFile(self.zip_path, 'r') as zipf:
+            with zipf.open(self.files[idx]) as file:
+                file_content = file.read()  # Read the entire file content
+                
+        # Convert bytes to a BytesIO object and load with numpy
+        pose_file = io.BytesIO(file_content)
+        pose_array = np.load(pose_file, mmap_mode='r')['data']
+        tensor = torch.from_numpy(pose_array).to(dtype=self.dtype)
+        return tensor
 
     def __getitem__(self, idx):
         # print("len(self.memory_files), len(self.files):  ", len(self.memory_files), len(self.files))
         if len(self.memory_files) == len(self.files):
             tensor = self.memory_files[idx]
         else:
+            counter = 0
             while True:
-                zipf = zipfile.ZipFile(self.zip_path, 'r')
-                
                 # If we want to store in memory, we first load sequentially all the files
                 idx = idx if not self.in_memory else len(self.memory_files)
 
-                with zipf.open(self.files[idx]) as file:
+                with self.zipf.open(self.files[idx]) as file:
                     file_content = file.read()  # Read the entire file content
     
                 # Convert the bytes content to a BytesIO object and load with numpy
                 pose_file = io.BytesIO(file_content)
                 pose_array = np.load(pose_file, mmap_mode='r')
                 
-                # row = self.df.iloc[idx]
-                # filename = row['movie_filename'].split('.')[0] + '.npz'
-                # print("filename in getitem: ", filename)
                 pose_array = pose_array['data']
+                
+                # did preprocessing before saving to zip, skipping this step
+
+                counter += 1
+                if counter % 50 == 0:
+                    print(counter)
+
                 try:
                     tensor = torch.from_numpy(pose_array).to(dtype=self.dtype)
                 except KeyError:
-                    print(f'Filename %s does not exist, skipping' % filename)
-                    zipf.close()
-                    continue
-                # print("Tensor to store in memory:\n", tensor)
+                    print(f'Filename %s does not exist, skipping' % idx)
+                    idx += 1
+                    # zipf.close()
+                    if idx >= len(self.files):
+                        raise IndexError("All files have been processed or skipped due to errors.")
+                    continue 
+                # print("Tensor to store in memory shape:\n", tensor.size())
                 
                 # This line used to turn tensor into a masked tensor: tensor = preprocess_pose(pose, dtype=self.dtype)
                 if self.in_memory:
@@ -528,17 +564,42 @@ class _ZipPoseDataset(Dataset):
                         break
                     if len(self.memory_files) % 10000 == 0:
                         print_memory()
-                zipf.close()
+        self.zipf.close()
         return crop_pose(tensor, self.max_length)
+
+    def __getitem3__(self, idx):
+        if len(self.memory_files) == len(self.files):
+            return crop_pose(self.memory_files[idx], self.max_length)
+
+        if self.in_memory:
+            if len(self.memory_files) < len(self.files):
+                # Load all files in parallel and cache them
+                futures = [self.executor.submit(self._load_file, i) for i in range(len(self.files))]
+                for future in concurrent.futures.as_completed(futures):
+                    tensor = future.result()
+                    self.memory_files.append(tensor)
+                if len(self.memory_files) % 5000 == 0:
+                    print_memory()
+            return crop_pose(self.memory_files[idx], self.max_length)
+
+        # For non-memory mode, load the file in parallel as needed
+        future = self.executor.submit(self._load_file, idx)
+        tensor = future.result()
+
+        return crop_pose(tensor, self.max_length)
+
+    def __del__(self):
+        # Shutdown the executor to free up resources
+        self.executor.shutdown()
 
     def slice(self, start, end):
         return _ZipPoseDataset(zip_path=self.zip_path, files=self.files[start:end],
-                               max_length=self.max_length, in_memory=self.in_memory, dtype=self.dtype, df=self.df)
+                               max_length=self.max_length, in_memory=self.in_memory, dtype=self.dtype, df=self.df, normalize_by_mean_pose=self.normalize_by_mean_pose)
 
 
 
 class ZipPoseDataset(_ZipPoseDataset):
-    def __init__(self, zip_path: Path, max_length: int = 512, in_memory: bool = False, dtype=torch.float32, df=None):
+    def __init__(self, zip_path: Path, max_length: int = 512, in_memory: bool = False, dtype=torch.float32, df=None, normalize_by_mean_pose=True):
         print(f"ZipPoseDataset @ {zip_path} with max_length={max_length}, in_memory={in_memory}")
 
         # pylint: disable=consider-using-with
@@ -547,7 +608,7 @@ class ZipPoseDataset(_ZipPoseDataset):
             files = zip_obj.namelist()
             print("Total files", len(files))
 
-            super().__init__(zip_path=zip_path, files=files, max_length=max_length, in_memory=in_memory, dtype=dtype, df=df)
+            super().__init__(zip_path=zip_path, files=files, max_length=max_length, in_memory=in_memory, dtype=dtype, df=df, normalize_by_mean_pose=normalize_by_mean_pose)
 
 
 # Plotting videos in jupyter

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from vector_quantize_pytorch import LFQ
+from vector_quantize_pytorch import LFQ, VectorQuantize
 import math
 
 
@@ -335,3 +335,28 @@ class LFQAutoEncoder(nn.Module):
         perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
         return x.clamp(-1, 1), indices, entropy_aux_loss, perplexity
 """
+
+class QSTGAE(nn.Module):
+    # https://github.com/ZhouKanglei/STGAE
+    def __init__(self, n_embeddings=512, latent_dim=16, **vq_kwargs):
+        super(QSTGAE, self).__init__()
+        self.n_embeddings = n_embeddings
+        self.latent_dim = latent_dim
+        # encoder
+        # self.gcn = 
+        # self.tcn =
+        # self.res = residual block
+        # quantizer
+        self.quantizer = VectorQuantize(dim=latent_dim, accept_image_fmap=False, **vq_kwargs)
+
+    def forward(self, x, epoch):
+
+        # encoding block (can be repeated several times)
+        h = self.gcn(x)
+        encoded_x = self.tcn(h) + self.res(x)
+
+        # quantization
+        z = self.quantizer(encoded_x)
+
+        # decoding block (can be repeated several times)
+        x_hat = self.decoder(z)
