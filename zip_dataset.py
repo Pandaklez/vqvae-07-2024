@@ -24,7 +24,7 @@ sequence_length = 30
 def save_poses_to_zip(poses_dir: str, zip_filename: str, sslc_pose: str, normalize_by_mean_pose=True):
     # pose_files = list(Path(poses_dir).glob("*.pose"))
     with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        sslc_pose_dataset = utils.PoseDataset(
+        sslc_pose_dataset = utils.PoseDataset2(
             df=sslc_pose,
             root_dir=poses_dir,
             sequence_length=sequence_length,
@@ -38,15 +38,15 @@ def save_poses_to_zip(poses_dir: str, zip_filename: str, sslc_pose: str, normali
 
             # Using the file name as the zip entry name
             npz_filename = filename + '.npz'
+            float16_data = data_tensor.cpu().numpy().astype(np.float16)
+            # float16_data = data_tensor.to(torch.float16)
 
             # Saving the masked array to a temporary buffer
             with io.BytesIO() as buf:
-                # data = pose.body.data[:, 0, :, :]  # only first person
-
-                float16_data = data_tensor.to(torch.float16)
-                # np.set_printoptions(precision=10, floatmode="fixed")
+                np.set_printoptions(precision=10, floatmode="fixed")
                 np.savez_compressed(buf, data=float16_data)
-                zip_file.writestr(npz_filename, buf.getvalue())
+                buf_value = buf.getvalue()
+                zip_file.writestr(npz_filename, buf_value)
             print(f"Saved {npz_filename} to {zip_filename}")
 
 
@@ -69,6 +69,6 @@ if __name__ == "__main__":
     save_poses_to_zip(args.dir, args.out, sslc_pose, normalize_by_mean_pose=args.norm) 
 
     # corpus: python3 zip_dataset.py --dir "./SSL_video_eaf/SSLC_poses/" --out "./SSL_video_eaf/SSLC_poses.zip" --norm True
-    # lexicon: python zip_dataset.py --dir "./lexicon_jsons/out/" --out "./lexicon_jsons/lexicon_poses_norm_train.zip" --df "./lexicon_jsons/sign_data_frames_info_train.pkl" --norm True
-    # lexicon: python zip_dataset.py --dir "./lexicon_jsons/out/" --out "./lexicon_jsons/lexicon_poses_norm_test.zip" --df "./lexicon_jsons/sign_data_frames_info_test.pkl" --norm True
-    # lexicon: python zip_dataset.py --dir "./lexicon_jsons/out/" --out "./lexicon_jsons/lexicon_poses_norm_val.zip" --df "./lexicon_jsons/sign_data_frames_info_val.pkl" --norm True
+    # lexicon: python zip_dataset.py --dir "./lexicon_jsons/out/" --out "./lexicon_jsons/lexicon_poses_norm_train2.zip" --df "./lexicon_jsons/sign_data_frames_info_train.pkl" --norm True
+    # lexicon: python zip_dataset.py --dir "./lexicon_jsons/out/" --out "./lexicon_jsons/lexicon_poses_norm_test2.zip" --df "./lexicon_jsons/sign_data_frames_info_test.pkl" --norm True
+    # lexicon: python zip_dataset.py --dir "./lexicon_jsons/out/" --out "./lexicon_jsons/lexicon_poses_norm_val2.zip" --df "./lexicon_jsons/sign_data_frames_info_val.pkl" --norm True

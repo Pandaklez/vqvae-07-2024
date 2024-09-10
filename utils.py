@@ -439,10 +439,28 @@ class PoseDataset(Dataset):
 
 def crop_pose(tensor, max_length: int):
     if max_length is not None:
-        offset = random.randint(0, len(tensor) - max_length) \
-            if len(tensor) > max_length else 0
+        offset = random.randint(0, len(tensor) - max_length) if len(tensor) > max_length else 0
         return tensor[offset:offset + max_length]
     return tensor
+
+def sample_from_pose(tensor, max_length: int, stride=25):
+    # print("len(tensor): ", tensor.size())  [112, x]
+    # sample a random sequence of max_length from the tensor
+    sampled_tensors = []
+    num_features, num_frames = tensor.shape
+    for start in range(0, num_frames - max_length + 1, stride):
+        # Extract a window of shape [112, window_size]
+        if start + max_length < num_frames:
+            window = tensor[:, start:start + max_length]
+            sampled_tensors.append(window)
+        else:
+            break
+    if len(sampled_tensors) != 0:
+        return random.choice(sampled_tensors)
+    else:
+        # return padded tensor if the video is shorter than max_length
+        padded_tensor = torch.nn.functional.pad(tensor, (0, max_length - tensor.size(1)), value=0)
+        return padded_tensor
 
 
 class PackedDataset(IterableDataset):
@@ -487,7 +505,7 @@ class PackedDataset(IterableDataset):
 class _ZipPoseDataset(Dataset):
     def __init__(self, zip_path,   # zip_obj: zipfile.ZipFile,
                  files: list,
-                 max_length: int = 512,
+                 max_length: int = 30,
                  in_memory: bool = False,
                  dtype=torch.float32,
                  df=None,
@@ -502,7 +520,6 @@ class _ZipPoseDataset(Dataset):
         self.memory_files = []
         self.normalize_by_mean_pose = normalize_by_mean_pose
         self.zipf = zipfile.ZipFile(self.zip_path, 'r')
-        #self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
     def __len__(self):
         return len(self.files)
@@ -534,8 +551,8 @@ class _ZipPoseDataset(Dataset):
     
                 # Convert the bytes content to a BytesIO object and load with numpy
                 pose_file = io.BytesIO(file_content)
-                pose_array = np.load(pose_file, mmap_mode='r')
-                
+                pose_array = np.load(pose_file, mmap_mode='r', allow_pickle=True)
+                #print("pose_array: ", pose_array)
                 pose_array = pose_array['data']
                 
                 # did preprocessing before saving to zip, skipping this step
@@ -545,7 +562,7 @@ class _ZipPoseDataset(Dataset):
                     print(counter)
 
                 try:
-                    tensor = torch.from_numpy(pose_array).to(dtype=self.dtype)
+                    tensor = torch.from_numpy(pose_array.astype(np.float16)).to(dtype=self.dtype)
                 except KeyError:
                     print(f'Filename %s does not exist, skipping' % idx)
                     idx += 1
@@ -565,32 +582,7 @@ class _ZipPoseDataset(Dataset):
                     if len(self.memory_files) % 10000 == 0:
                         print_memory()
         self.zipf.close()
-        return crop_pose(tensor, self.max_length)
-
-    def __getitem3__(self, idx):
-        if len(self.memory_files) == len(self.files):
-            return crop_pose(self.memory_files[idx], self.max_length)
-
-        if self.in_memory:
-            if len(self.memory_files) < len(self.files):
-                # Load all files in parallel and cache them
-                futures = [self.executor.submit(self._load_file, i) for i in range(len(self.files))]
-                for future in concurrent.futures.as_completed(futures):
-                    tensor = future.result()
-                    self.memory_files.append(tensor)
-                if len(self.memory_files) % 5000 == 0:
-                    print_memory()
-            return crop_pose(self.memory_files[idx], self.max_length)
-
-        # For non-memory mode, load the file in parallel as needed
-        future = self.executor.submit(self._load_file, idx)
-        tensor = future.result()
-
-        return crop_pose(tensor, self.max_length)
-
-    def __del__(self):
-        # Shutdown the executor to free up resources
-        self.executor.shutdown()
+        return sample_from_pose(tensor, self.max_length)
 
     def slice(self, start, end):
         return _ZipPoseDataset(zip_path=self.zip_path, files=self.files[start:end],
@@ -599,7 +591,7 @@ class _ZipPoseDataset(Dataset):
 
 
 class ZipPoseDataset(_ZipPoseDataset):
-    def __init__(self, zip_path: Path, max_length: int = 512, in_memory: bool = False, dtype=torch.float32, df=None, normalize_by_mean_pose=True):
+    def __init__(self, zip_path: Path, max_length: int = 30, in_memory: bool = False, dtype=torch.float32, df=None, normalize_by_mean_pose=True):
         print(f"ZipPoseDataset @ {zip_path} with max_length={max_length}, in_memory={in_memory}")
 
         # pylint: disable=consider-using-with
@@ -690,3 +682,132 @@ def draw_sample_video(n, ax1, sequence_length, sample_id, x, name):
     ax1.set_title(name)
 
     return artists
+
+
+class PoseDataset2(Dataset):
+    """
+    
+    """
+    def __init__(self, df, root_dir, sequence_length=30, center_on_wrist=True, random_seed=None, normalize_by_mean_pose=False, trim=True):
+        self.df = df
+        self.root_dir = root_dir
+        self.sequence_length = sequence_length
+        self.center_on_wrist = center_on_wrist
+        self.normalize_by_mean_pose = normalize_by_mean_pose
+        self.current_counter = 0
+        self.length = len(self.df)
+        self.trim = trim
+        print(self.trim)
+        if random_seed is not None: 
+            seed(random_seed)
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx=None):
+        skipped = 0
+        if idx is None:
+            idx = randrange(0, len(self.df))
+        while True:
+            try:
+                row = self.df.iloc[idx]
+                filename = os.path.join(self.root_dir, row['movie_filename'].split('.')[0] + str('.json'))
+            except Exception as e:
+                skipped += 1
+                idx += 1
+                print(f"At df index skipped")
+                if idx >= len(self.df):
+                    break
+                continue
+            try:
+                json_data = load_json_file(filename)
+            except Exception as e:
+                skipped += 1
+                print(f"At json reading, Skipped {skipped} times")
+                #print(e)
+                idx += 1
+                if idx >= len(self.df):
+                    break
+                continue
+
+            # print("filename: ", filename)
+            
+            # trim first 110 frames and last 40
+            max_frame_number = get_full_sequence_length(json_data)
+
+            if self.trim:
+                json_data = delete_start_end_frames(json_data, max_frame_number)
+            
+            aspect_ratio = row['aspect_ratio']
+            frame_rate = int(row['frame_rate'])
+            #print(f"Frame rate: {frame_rate}, Aspect ratio: {aspect_ratio}")
+            resampling_factor = round(frame_rate/25)
+            #print(f"Resampling factor: {resampling_factor}")
+            
+            if self.trim:
+                # finding center of first frame
+                center = get_center(json_data['frame_112'])
+                # scaling all frames to have the same scale
+                scale_factor = get_scale(json_data['frame_112'])
+            else:
+                # finding center of first frame
+                center = get_center(json_data['frame_1'])
+                # scaling all frames to have the same scale
+                scale_factor = get_scale(json_data['frame_1'])
+            
+            # Get the whole video sequence, sample later in data loader       
+            data = []
+            counter = 0
+            for key, frame in json_data.items():
+                if counter % resampling_factor == 0:
+                    all_data = frame_to_tensor(frame, center, scale_factor, aspect_ratio, center_on_wrist=self.center_on_wrist)
+                    
+                    if all_data.shape[0] != 56:
+                        skipped += 1
+                        idx += 1
+                        if idx >= len(self.df):
+                            break
+                        continue
+
+                    if self.normalize_by_mean_pose:
+                        all_data = normalize_mean_std(all_data.flatten()).reshape(56, 2)
+                    data.append(all_data)
+                    
+                counter += 1
+            #if len(data) != self.sequence_length:
+            #    skipped += 1
+                #print("filename: ", filename)
+            #    print(f"At sequence, Skipped {skipped} times")
+            #    idx += 1
+            #    if idx >= len(self.df):
+            #        break
+            #    continue
+            # print(data.shape) # (sequence_length=30,56,2)
+            data = np.stack(data).astype(np.float32)  #, dtype=np.float32)
+            # print(data.dtype)  # This should not be 'object'
+            data_tensor = torch.tensor(data, dtype=torch.float32)  # torch.from_numpy(data)
+            # data_tensor = data_tensor.reshape(self.sequence_length, -1)
+            data_tensor = data_tensor.reshape(-1, 112)
+            data_tensor = data_tensor.transpose(0,1)
+            
+            #if find_outlier(data_tensor):
+            #    skipped += 1
+            #    #print("filename: ", filename)
+            #    print(f"At outliers, Skipped {skipped} times")
+            #    idx += 1
+            #    if idx >= len(self.df):
+            #        break
+            #    continue
+            break
+        print(f"Returning sample but skipped {skipped} times")
+
+        return data_tensor, row['movie_filename'].split('.')[0]
+
+    def __next__(self):
+        if self.current_counter >= self.length:
+            raise StopIteration
+        self.current_counter += 1
+        return self.__getitem__(idx=self.current_counter - 1)
+
+    def __iter__(self):
+        return self
